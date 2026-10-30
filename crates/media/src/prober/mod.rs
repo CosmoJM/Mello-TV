@@ -148,6 +148,17 @@ impl ProbeFailure {
 }
 impl From<TransportError> for ProbeFailure {
     fn from(error: TransportError) -> Self {
+        if !matches!(error, TransportError::Cancelled) {
+            // Full cause chain (DNS, TLS, proxy, ...); never includes the URL.
+            let mut detail = error.to_string();
+            let mut source = std::error::Error::source(&error);
+            while let Some(cause) = source {
+                detail.push_str(": ");
+                detail.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            tracing::warn!(%detail, "stream probe request failed");
+        }
         match error {
             TransportError::Cancelled => Self::Cancelled,
             TransportError::Timeout => Self::Timeout,
