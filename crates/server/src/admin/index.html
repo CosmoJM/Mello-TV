@@ -14,14 +14,30 @@
     <p id="status" role="status">Checking…</p>
   </header>
 
-  <section id="login" hidden>
-    <h2>API key</h2>
-    <p>Run <code>docker compose exec mello cat /data/api-key</code> on the server and paste the key here.
-      It is kept in this browser only.</p>
-    <form id="login-form">
-      <input id="key" type="password" autocomplete="off" required aria-label="API key">
-      <button>Save</button>
+  <section id="setup" hidden>
+    <h2 id="setup-title">Create your login</h2>
+    <p>You need the API key once. Get it on the server with
+      <code>docker compose exec mello cat /data/api-key</code>.
+      After this, sign in with your username and password.</p>
+    <form id="setup-form" class="stack">
+      <label>API key <input id="setup-key" type="password" autocomplete="off" required></label>
+      <label>Username <input id="setup-user" autocomplete="username" required maxlength="64"
+        pattern="[A-Za-z0-9._\-]+" title="Letters, digits, '.', '-' or '_'"></label>
+      <label>Password <input id="setup-pass" type="password" autocomplete="new-password" required minlength="10"></label>
+      <label>Repeat password <input id="setup-pass2" type="password" autocomplete="new-password" required minlength="10"></label>
+      <button>Save and sign in</button>
     </form>
+    <p class="foot"><button id="setup-cancel" class="link" type="button" hidden>Back to sign in</button></p>
+  </section>
+
+  <section id="login" hidden>
+    <h2>Sign in</h2>
+    <form id="login-form" class="stack">
+      <label>Username <input id="login-user" autocomplete="username" required></label>
+      <label>Password <input id="login-pass" type="password" autocomplete="current-password" required></label>
+      <button>Sign in</button>
+    </form>
+    <p class="foot"><button id="forgot" class="link" type="button">Forgot password? Reset it with the API key</button></p>
   </section>
 
   <section id="app" hidden>
@@ -36,7 +52,7 @@
       <button id="sync" class="secondary">Sync now</button>
     </div>
     <ul id="library" class="list"></ul>
-    <p class="foot"><button id="logout" class="link">Forget key</button></p>
+    <p class="foot"><span id="who"></span> · <button id="logout" class="link">Sign out</button></p>
   </section>
 </main>
 </body>

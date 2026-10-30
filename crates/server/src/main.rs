@@ -86,8 +86,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(library.clone().run_sync_loop(shutdown.clone()));
 
+    let accounts = Arc::new(stream_server::accounts::Accounts::open(&config.data_dir).await?);
+    if !accounts.account_exists() {
+        tracing::info!(
+            "open http://<this server>:{}/admin to create the admin login (needs the API key once)",
+            config.port
+        );
+    }
     let state = AppState::new(AppStateInit {
         keys,
+        accounts,
         media,
         relay,
         tmdb,

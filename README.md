@@ -80,9 +80,16 @@ Changes are synced within a few seconds. Two hands-off options:
 
 ### Admin page
 
-Open `http://<mello>:8080/admin` on a phone or computer, paste the admin key
-once (it stays in that browser), then search, add, remove and sync. The page
-uses the same `/api` endpoints as the examples below.
+Open `http://<mello>:8080/admin` on a phone or computer. On the first visit,
+paste the API key once and choose a username and password. After that, just
+sign in; each browser stays signed in for 30 days. Search, add, remove and sync
+from there.
+
+- **Forgot the password?** Choose "Reset it with the API key" on the sign-in
+  screen. Resetting signs out every browser.
+- Passwords are stored as Argon2 hashes in `data/admin-account.json`; sessions
+  (hashed) in `data/sessions.json`. Deleting both files removes the login.
+- Scripts and `curl` keep using the API key, as in the examples below.
 
 ## Testing playback without Jellyfin
 

@@ -2,32 +2,34 @@
 // All server data is inserted with textContent, never as HTML.
 "use strict";
 
-const KEY_STORE = "mello-api-key";
 const $ = (id) => document.getElementById(id);
-
-function storedKey() {
-  try { return localStorage.getItem(KEY_STORE) || ""; } catch { return ""; }
-}
-function storeKey(key) {
-  try { key ? localStorage.setItem(KEY_STORE, key) : localStorage.removeItem(KEY_STORE); } catch { /* private mode */ }
-}
 
 function status(text) { $("status").textContent = text; }
 
-async function api(method, path) {
+// Requests carry the session cookie automatically; the custom header proves
+// they come from this page (the server rejects cookie requests without it).
+async function request(method, path, body) {
+  const headers = { "X-Mello-Request": "1" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch("/api" + path, {
     method,
-    headers: { Authorization: "Bearer " + storedKey() },
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
     cache: "no-store",
   });
+  const data = response.status === 204 ? null : await response.json().catch(() => null);
+  return { response, data };
+}
+
+async function api(method, path, body) {
+  const { response, data } = await request(method, path, body);
   if (response.status === 401) {
-    storeKey("");
-    show(false);
-    throw new Error("That key was not accepted.");
+    await route();
+    throw new Error("Please sign in again.");
   }
-  const body = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error((body && body.error) || response.statusText);
-  return body;
+  if (!response.ok) throw new Error((data && data.error) || response.statusText);
+  return data;
 }
 
 function item(label, meta, buttonText, onClick) {
@@ -110,23 +112,63 @@ async function refreshStatus() {
     (issues ? ` · ${issues} issue(s)` : "") + (s.tmdb_configured ? "" : " · TMDB key missing"));
 }
 
-function show(loggedIn) {
-  $("login").hidden = loggedIn;
-  $("app").hidden = !loggedIn;
-  if (!loggedIn) status("Enter the API key to manage the library.");
+function view(name) {
+  for (const id of ["setup", "login", "app"]) $(id).hidden = id !== name;
 }
 
-async function start() {
-  if (!storedKey()) return show(false);
-  show(true);
-  try { await refreshStatus(); await loadLibrary(); } catch (e) { status(e.message); }
+function showSetup(reset) {
+  view("setup");
+  $("setup-title").textContent = reset ? "Reset your login" : "Create your login";
+  $("setup-cancel").hidden = !reset;
+  status(reset ? "Enter the API key and choose a new password." : "First visit: set up a login.");
 }
 
-$("login-form").addEventListener("submit", (event) => {
+async function route() {
+  const { data } = await request("GET", "/session");
+  if (!data) return status("Cannot reach the server.");
+  if (data.logged_in) {
+    view("app");
+    $("who").textContent = "Signed in as " + data.username;
+    try { await refreshStatus(); await loadLibrary(); } catch (e) { status(e.message); }
+  } else if (data.account_exists) {
+    view("login");
+    status("Sign in to manage the library.");
+  } else {
+    showSetup(false);
+  }
+}
+
+$("setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  storeKey($("key").value.trim());
-  $("key").value = "";
-  start();
+  if ($("setup-pass").value !== $("setup-pass2").value) return status("The passwords do not match.");
+  const button = event.submitter;
+  if (button) button.disabled = true;
+  const { response, data } = await request("POST", "/account", {
+    api_key: $("setup-key").value.trim(),
+    username: $("setup-user").value.trim(),
+    password: $("setup-pass").value,
+  });
+  if (button) button.disabled = false;
+  if (!response.ok) return status((data && data.error) || "Could not save the login.");
+  for (const id of ["setup-key", "setup-pass", "setup-pass2"]) $(id).value = "";
+  await route();
+});
+$("setup-cancel").addEventListener("click", () => route());
+$("forgot").addEventListener("click", () => showSetup(true));
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  if (button) button.disabled = true;
+  status("Signing in…");
+  const { response, data } = await request("POST", "/login", {
+    username: $("login-user").value.trim(),
+    password: $("login-pass").value,
+  });
+  if (button) button.disabled = false;
+  $("login-pass").value = "";
+  if (!response.ok) return status((data && data.error) || "Sign in failed.");
+  await route();
 });
 $("search-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -139,6 +181,9 @@ $("sync").addEventListener("click", async (event) => {
   catch (e) { status(e.message); }
   event.target.disabled = false;
 });
-$("logout").addEventListener("click", () => { storeKey(""); show(false); });
+$("logout").addEventListener("click", async () => {
+  await request("POST", "/logout");
+  await route();
+});
 
-start();
+route();

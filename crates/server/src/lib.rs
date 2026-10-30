@@ -1,6 +1,7 @@
 //! mello-jellyfin library: HTTP app, auth, configuration, library sync and
 //! the TMDB client. `main.rs` wires these together.
 
+pub mod accounts;
 pub mod app;
 pub mod auth;
 pub mod config;

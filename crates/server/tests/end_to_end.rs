@@ -432,8 +432,10 @@ async fn harness() -> Result<Option<Harness>, BoxError> {
     let client = HttpClient::with_config(relay_transport(EgressMode::Direct))?
         .with_fixture_origins([origin_a.clone(), origin_b.clone()]);
     let play_key = keys.play_key().to_owned();
+    let accounts = Arc::new(stream_server::accounts::Accounts::open(data.path()).await?);
     let state = AppState::new(AppStateInit {
         keys,
+        accounts,
         media: engine.clone(),
         relay: Arc::new(MediaRelay::new(client)),
         tmdb,
