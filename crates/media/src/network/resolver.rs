@@ -68,7 +68,9 @@ async fn resolve_cached(host: &str) -> Result<Vec<SocketAddr>, TransportError> {
     if addresses.is_empty() {
         return Err(TransportError::Dns);
     }
-    validate_answers(&addresses)?;
+    // No public-address check here: callers apply it, except for the
+    // explicitly configured proxy host, which is usually private (e.g. a
+    // `gluetun` container on the Docker network).
 
     let mut cache = dns_cache().write().unwrap_or_else(|e| e.into_inner());
     if cache.len() >= DNS_CACHE_MAX_ENTRIES {
