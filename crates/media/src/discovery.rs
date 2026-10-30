@@ -656,6 +656,7 @@ impl Inner {
         statuses.sort_by(|a, b| a.provider.cmp(&b.provider));
         result.providers = Some(statuses);
         if result.selected.is_none() {
+            log_unavailable(&result);
             return Err(DiscoveryError::Unavailable);
         }
         result.validate().map_err(|_| DiscoveryError::Protocol)?;
@@ -712,4 +713,34 @@ impl stream_core::ports::MediaEngine for DiscoveryCoordinator {
                 _ => stream_core::error::DomainError::Infrastructure(Box::new(err)),
             })
     }
+}
+
+/// Explains an empty selection: what each provider returned and why each
+/// candidate was rejected. No URLs, cookies or tokens are logged.
+fn log_unavailable(result: &Selection) {
+    let providers: Vec<String> = result
+        .providers
+        .iter()
+        .flatten()
+        .map(|status| match status.failure {
+            Some(failure) => format!(
+                "{}: {} candidates, failed ({failure:?})",
+                status.provider, status.candidate_count
+            ),
+            None => format!("{}: {} candidates", status.provider, status.candidate_count),
+        })
+        .collect();
+    let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
+    for reason in result
+        .rejected
+        .iter()
+        .flat_map(|rejected| rejected.values())
+    {
+        *reasons.entry(reason.as_str()).or_default() += 1;
+    }
+    tracing::warn!(
+        providers = %providers.join("; "),
+        rejected = ?reasons,
+        "no eligible source"
+    );
 }
