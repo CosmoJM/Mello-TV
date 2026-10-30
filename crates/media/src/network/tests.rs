@@ -357,3 +357,69 @@ async fn custom_dial_resolver_returns_only_its_validated_ip_addresses() -> TestR
     );
     Ok(())
 }
+
+/// A proxy whose hostname resolves to a private address (like `gluetun` on a
+/// Docker network) must be usable, while the same name stays forbidden as a
+/// destination. Regression: the shared DNS helper rejected it first.
+#[tokio::test]
+async fn private_proxy_host_is_allowed_but_not_as_a_destination() -> TestResult {
+    use reqwest::dns::Resolve;
+    use std::str::FromStr;
+
+    let guarded = super::resolver::GuardedResolver::new(Some("localhost".into()));
+    let name = reqwest::dns::Name::from_str("localhost")?;
+    let addresses: Vec<_> = guarded
+        .resolve(name)
+        .await
+        .map_err(|e| e.to_string())?
+        .collect();
+    assert!(addresses.iter().any(|a| a.ip().is_loopback()));
+    assert!(
+        super::resolver::GuardedResolver::destination("localhost")
+            .await
+            .is_err()
+    );
+    let unproxied = super::resolver::GuardedResolver::new(None);
+    let name = reqwest::dns::Name::from_str("localhost")?;
+    assert!(unproxied.resolve(name).await.is_err());
+    Ok(())
+}
+
+/// End to end: requests to a public IP go through an HTTP proxy that is
+/// reachable only by a private hostname.
+#[tokio::test]
+async fn requests_flow_through_a_proxy_on_a_private_hostname() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let proxy = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).await?;
+            request.push(byte[0]);
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nproxied")
+            .await?;
+        Ok::<_, std::io::Error>(String::from_utf8_lossy(&request).into_owned())
+    });
+    let client = HttpClient::with_config(TransportConfig {
+        egress: super::EgressMode::from_proxy_url(&format!("http://localhost:{port}"))?,
+        ..TransportConfig::default()
+    })?;
+    // A public IP literal needs no DNS; the proxy answers for it.
+    let response = client
+        .fetch(
+            FetchRequest::get("http://93.184.215.14/video.m3u8"),
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(response.body.as_ref(), b"proxied");
+    let seen = proxy.await??;
+    assert!(
+        seen.starts_with("GET http://93.184.215.14/video.m3u8"),
+        "{seen}"
+    );
+    Ok(())
+}
