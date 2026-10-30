@@ -40,6 +40,7 @@ use stream_core::{
 use stream_media::{MediaRelay, RelayError, RelayResponse, delivery_format};
 
 use crate::{
+    accounts::{AccountError, Accounts, SESSION_COOKIE, SESSION_LIFETIME},
     auth::{Keys, random_hex},
     library::{Kind, Library},
     tmdb::{Tmdb, TmdbError},
@@ -59,6 +60,7 @@ const PREFETCH_HOLD: Duration = Duration::from_secs(2 * 3600);
 #[derive(Clone)]
 pub struct AppState {
     pub keys: Keys,
+    pub accounts: Arc<Accounts>,
     pub media: Arc<dyn MediaEngine>,
     pub relay: Arc<MediaRelay>,
     pub tmdb: Tmdb,
@@ -91,6 +93,7 @@ enum CachedPlay {
 
 pub struct AppStateInit {
     pub keys: Keys,
+    pub accounts: Arc<Accounts>,
     pub media: Arc<dyn MediaEngine>,
     pub relay: Arc<MediaRelay>,
     pub tmdb: Tmdb,
@@ -105,6 +108,7 @@ impl AppState {
     pub fn new(init: AppStateInit) -> Self {
         Self {
             keys: init.keys,
+            accounts: init.accounts,
             media: init.media,
             relay: init.relay,
             tmdb: init.tmdb,
@@ -153,6 +157,10 @@ pub fn router(state: AppState) -> Router {
             "/stream/{session}/r/{file}",
             get(stream_resource).options(preflight),
         )
+        .route("/api/session", get(api_session))
+        .route("/api/account", post(api_account))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
         .route("/api/status", get(api_status))
         .route("/api/search", get(api_search))
         .route("/api/library", get(api_library))
@@ -775,15 +783,139 @@ struct ApiQuery {
     q: Option<String>,
 }
 
+/// Admin access: the API key (header or `?key=`, for scripts) or a signed-in
+/// admin page session. Cookie sessions must also send `X-Mello-Request`,
+/// which a cross-site form or link cannot add, as a CSRF guard.
 fn require_api(state: &AppState, headers: &HeaderMap, query: &ApiQuery) -> Result<(), Response> {
     if state.keys.authorize_api(headers, query.key.as_deref()) {
-        Ok(())
-    } else {
-        Err(error(
-            StatusCode::UNAUTHORIZED,
-            "missing or invalid API key",
-        ))
+        return Ok(());
     }
+    let signed_in = session_token(headers)
+        .and_then(|token| state.accounts.session_user(&token))
+        .is_some();
+    if signed_in && headers.contains_key(CSRF_HEADER) {
+        return Ok(());
+    }
+    Err(error(
+        StatusCode::UNAUTHORIZED,
+        "sign in, or send the API key",
+    ))
+}
+
+const CSRF_HEADER: &str = "x-mello-request";
+
+fn session_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, value)| value.to_owned())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+}
+
+fn session_cookie(headers: &HeaderMap, token: &str, max_age: u64) -> HeaderValue {
+    let secure = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        == Some("https");
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{}",
+        if secure { "; Secure" } else { "" }
+    );
+    HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static(""))
+}
+
+fn signed_in(headers: &HeaderMap, token: &str, username: &str) -> Response {
+    let mut response = Json(json!({ "logged_in": true, "username": username })).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        session_cookie(headers, token, SESSION_LIFETIME.as_secs()),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Public: tells the admin page whether to show setup, login or the app.
+async fn api_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let username = session_token(&headers).and_then(|token| state.accounts.session_user(&token));
+    let mut response = Json(json!({
+        "account_exists": state.accounts.account_exists(),
+        "logged_in": username.is_some(),
+        "username": username,
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+#[derive(Deserialize)]
+struct AccountBody {
+    api_key: String,
+    username: String,
+    password: String,
+}
+
+/// Creates the admin account, or resets it. Always needs the API key.
+async fn api_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AccountBody>,
+) -> Response {
+    if !state.keys.is_api_key(body.api_key.trim()) {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        return error(StatusCode::UNAUTHORIZED, "that API key is not correct");
+    }
+    let username = body.username.trim();
+    if let Err(e) = state.accounts.set_account(username, &body.password).await {
+        let status = match e {
+            AccountError::InvalidUsername | AccountError::WeakPassword => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        return error(status, e.to_string());
+    }
+    match state.accounts.new_session(username).await {
+        Some(token) => signed_in(&headers, &token, username),
+        None => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not start a session",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    username: String,
+    password: String,
+}
+
+async fn api_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<LoginBody>,
+) -> Response {
+    let username = body.username.trim();
+    match state.accounts.login(username, &body.password).await {
+        Some(token) => signed_in(&headers, &token, username),
+        None => error(StatusCode::UNAUTHORIZED, "wrong username or password"),
+    }
+}
+
+async fn api_logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(token) = session_token(&headers) {
+        state.accounts.logout(&token).await;
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, session_cookie(&headers, "", 0));
+    response
 }
 
 fn tmdb_error(error_value: TmdbError) -> Response {

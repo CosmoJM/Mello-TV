@@ -30,6 +30,7 @@ reqwest = { workspace = true, features = ["query"] }
 sha2.workspace = true
 subtle.workspace = true
 url.workspace = true
+argon2 = "0.5"
 
 [dev-dependencies]
 tempfile = "3.27.0"
